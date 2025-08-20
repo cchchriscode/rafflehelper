@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Raffle App (Standalone, Mobile-Friendly)</title>
+  <style>
+    :root {
+      --gap: 8px;
+      --pad: 10px;
+      --radius: 10px;
+      --border: #d0d7de;
+    }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; color:#111; }
+    h1 { font-size: clamp(20px, 3.5vw, 24px); margin-bottom: 8px; }
+    h2 { margin-top: 20px; font-size: clamp(16px, 3vw, 20px); }
+    input, button {
+      padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: white;
+      font-size: 14px;
+    }
+    button { cursor: pointer; }
+    button.primary { background:#111; color:#fff; border-color:#111; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .bar {
+      display: grid; grid-template-columns: repeat(12, 1fr); gap: var(--gap); align-items: center; margin-bottom: 8px;
+    }
+    .bar > * { min-width: 0; }
+    .bar label { display:flex; gap:6px; align-items:center; grid-column: span 4; }
+    .bar button { grid-column: span 4; }
+    .bar .status { grid-column: span 12; }
+
+    @media (max-width: 640px) {
+      .bar { grid-template-columns: repeat(4, 1fr); }
+      .bar label { grid-column: span 4; width: 100%; }
+      .bar button { grid-column: span 4; width: 100%; }
+      .bar .status { grid-column: span 4; }
+      input, button { font-size: 15px; }
+    }
+
+    .note { font-size: 12px; color: #666; margin-bottom: 6px; }
+    .banner { background:#fff7e6; border:1px solid #ffd591; padding:8px 12px; border-radius:10px; color:#8c6d1f; margin-top:8px; display:none; }
+    .error { background:#ffecec; border-color:#ffb3b3; color:#a40000; }
+    .status {
+      font-size: 12px; color:#333; padding:8px 10px; border:1px dashed #bbb; border-radius:10px; background:#fafafa;
+    }
+    .legend { font-size: 12px; color:#444; margin-top:6px; }
+
+    .fixedTag { font-weight: 700; color: #1e40af; } /* blue-900 */
+    .randTag  { font-weight: 700; color: #15803d; } /* green-700 */
+    .conflict { background: #ffefef; }
+
+    .section {
+      background:#fff; border:1px solid var(--border); border-radius: 14px; padding: 12px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    }
+
+    .tableWrap { overflow-x: auto; border:1px solid var(--border); border-radius: 12px; }
+    table { border-collapse: collapse; width: 100%; min-width: 560px; }
+    th, td { border-bottom: 1px solid #eee; padding: 10px; text-align: left; vertical-align: top; white-space: nowrap; }
+    thead th { position: sticky; top: 0; background: #f8f9fb; z-index: 1; }
+    tbody tr:last-child td { border-bottom: 0; }
+
+    td button { padding: 6px 10px; }
+  </style>
+</head>
+<body>
+  <h1>🎟️ Raffle App</h1>
+
+  <div class="section">
+    <div class="bar">
+      <label> Total Spots:
+        <input type="number" id="totalSpots" value="100" min="1" inputmode="numeric" />
+      </label>
+      <button onclick="resetRandoms()">Reset Randoms</button>
+      <button id="assignBtn" class="primary" onclick="assignRandoms()">Assign Randoms</button>
+      <button onclick="exportSpotsCSV()">Export Spots CSV</button>
+      <button onclick="exportParticipantsCSV()">Export Participants CSV</button>
+      <button onclick="downloadThisHtml()">Download This HTML</button>
+      <span id="remainingSpots" class="status"></span>
+    </div>
+    <div class="note">Tip: Conflicting fixed picks (same spot chosen by multiple people) will highlight in red.</div>
+    <div id="conflictBanner" class="banner"></div>
+    <div id="overbookBanner" class="banner error"></div>
+  </div>
+
+  <h2>Add Participant</h2>
+  <div class="section">
+    <div class="bar">
+      <label> Name:
+        <input type="text" id="name" placeholder="e.g., Jane Doe" />
+      </label>
+      <label> Fixed Spots (e.g. 1,3,5-7):
+        <input type="text" id="fixed" placeholder="1,3,5-7" />
+      </label>
+      <label> Random Count:
+        <input type="number" id="randomCount" value="0" min="0" inputmode="numeric" />
+      </label>
+      <button class="primary" onclick="addParticipant()">Add</button>
+    </div>
+  </div>
+
+  <h2>Participants</h2>
+  <div class="section tableWrap">
+    <table id="participantsTable">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Name</th>
+          <th>Fixed Spots</th>
+          <th>Randoms (assigned)</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <h2>Assignments</h2>
+  <div class="legend"><span class="fixedTag">Blue = Fixed</span> • <span class="randTag">Green = Random</span></div>
+  <div class="section tableWrap">
+    <table id="assignmentsTable">
+      <thead>
+        <tr><th>Spot #</th><th>Name(s)</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <script>
+    let participants = []; // { name, fixed:[], randomCount, assignedRandoms:[] }
+    let assignments = {};  // spot# -> [{name, type:'fixed'|'rand'}]
+    let totalSpots = 100;
+    let randomsApplied = false;
+
+    const totalSpotsInput = document.getElementById('totalSpots');
+    totalSpotsInput.addEventListener('input', () => {
+      totalSpots = Math.max(1, parseInt(totalSpotsInput.value || '1', 10));
+      // changing total spots clears randoms (keeps fixed)
+      randomsApplied = false;
+      participants.forEach(p => p.assignedRandoms = []);
+      render();
+    });
+
+    function parseFixed(input) {
+      const out = new Set();
+      if (!input) return Array.from(out);
+      // Split on commas or whitespace
+      const parts = input.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+      for (const part of parts) {
+        // support "3-5", "3 - 5", and en/em dashes: 3–5, 3 — 5
+        const m = part.match(/^(\d+)\s*[–—-]\s*(\d+)$/);
+        if (m) {
+          let a = parseInt(m[1], 10);
+          let b = parseInt(m[2], 10);
+          if (Number.isFinite(a) && Number.isFinite(b)) {
+            const start = Math.min(a, b), end = Math.max(a, b);
+            for (let i = start; i <= end; i++) out.add(i);
+          }
+          continue;
+        }
+        // single number
+        const n = parseInt(part, 10);
+        if (Number.isFinite(n)) out.add(n);
+      }
+      return Array.from(out).filter(n => n >= 1 && n <= totalSpots).sort((a,b) => a-b);
+    }
+
+    function addParticipant() {
+      const name = document.getElementById('name').value.trim();
+      const fixed = parseFixed(document.getElementById('fixed').value);
+      const rc = Math.max(0, parseInt(document.getElementById('randomCount').value || '0', 10));
+
+      if (!name) {
+        alert('Please enter a participant name.');
+        return;
+      }
+
+      participants.push({ name, fixed, randomCount: rc, assignedRandoms: [] });
+      document.getElementById('name').value = '';
+      document.getElementById('fixed').value = '';
+      document.getElementById('randomCount').value = '0';
+      randomsApplied = false;
+      render();
+    }
+
+    function removeParticipant(idx) {
+      participants.splice(idx, 1);
+      randomsApplied = false;
+      render();
+    }
+
+    function resetRandoms() {
+      participants.forEach(p => p.assignedRandoms = []);
+      randomsApplied = false;
+      render();
+    }
+
+    function computeFixedClaims() {
+      const claims = new Map(); // spot -> name (first come keeps it)
+      const conflicts = [];     // [{spot, names:[]}] purely for display/disable
+      const fixedMap = {};      // spot -> [names] raw
+
+      participants.forEach(p => {
+        p.fixed.forEach(s => {
+          if (!fixedMap[s]) fixedMap[s] = [];
+          fixedMap[s].push(p.name);
+        });
+      });
+
+      // conflicts if any spot has 2+ names
+      for (const [spot, names] of Object.entries(fixedMap)) {
+        if (names.length > 1) conflicts.push({ spot: Number(spot), names });
+      }
+
+      // first-come keep claim order: participants array is FIFO
+      participants.forEach(p => {
+        p.fixed.forEach(s => {
+          if (!claims.has(s)) claims.set(s, p.name);
+        });
+      });
+
+      return { claims, conflicts };
+    }
+
+    function updateOverbookBanner(fixedClaims) {
+      const banner = document.getElementById('overbookBanner');
+      const totalFixed = fixedClaims.size;
+      const available = Math.max(0, totalSpots - totalFixed);
+      const requestedRemaining = participants.reduce((acc, p) => acc + Math.max(0, (p.randomCount || 0) - (p.assignedRandoms?.length || 0)), 0);
+      const alreadyRandomAssigned = participants.reduce((acc, p) => acc + (p.assignedRandoms?.length || 0), 0);
+      const availableRemaining = Math.max(0, available - alreadyRandomAssigned);
+
+      if (requestedRemaining > availableRemaining) {
+        banner.style.display = 'block';
+        banner.innerHTML = `<b>Not enough spots for additional randoms:</b> need ${requestedRemaining}, available ${availableRemaining}. Reduce new requests or increase total spots.`;
+        document.getElementById('assignBtn').disabled = true;
+      } else {
+        banner.style.display = 'none';
+        banner.textContent = '';
+        if (!hasFixedConflicts()) {
+          document.getElementById('assignBtn').disabled = false;
+        }
+      }
+    }
+
+    function hasFixedConflicts() {
+      const { conflicts } = computeFixedClaims();
+      return conflicts.length > 0;
+    }
+
+    function assignRandoms() {
+      // conflict check
+      const { claims, conflicts } = computeFixedClaims();
+      if (conflicts.length > 0) {
+        alert('Conflicts detected in FIXED picks. Please resolve before assigning randoms.');
+        return;
+      }
+
+      // sanitize/keep existing randoms: drop any that collide with fixed or exceed totalSpots, and resolve duplicates by FIFO
+      const takenFixed = new Set(Array.from(claims.keys()));
+      const seenRandom = new Set();
+      participants.forEach(p => {
+        const kept = [];
+        for (const spot of (p.assignedRandoms || [])) {
+          const inBounds = spot >= 1 && spot <= totalSpots;
+          if (!inBounds) continue;
+          if (takenFixed.has(spot)) continue;
+          if (seenRandom.has(spot)) continue; // another participant kept it first
+          seenRandom.add(spot);
+          kept.push(spot);
+        }
+        // trim if randomCount was reduced
+        p.assignedRandoms = kept.slice(0, Math.max(0, p.randomCount || 0));
+      });
+
+      // overbook check for REMAINING needs
+      const totalFixedCount = claims.size;
+      const totalRandomKept = participants.reduce((acc, p) => acc + (p.assignedRandoms?.length || 0), 0);
+      const availableSpotsCount = Math.max(0, totalSpots - totalFixedCount - totalRandomKept);
+      const remainingNeed = participants.reduce((acc, p) => acc + Math.max(0, (p.randomCount || 0) - (p.assignedRandoms?.length || 0)), 0);
+      if (remainingNeed > availableSpotsCount) {
+        alert(`Not enough spots for additional randoms: need ${remainingNeed}, available ${availableSpotsCount}.`);
+        render();
+        return;
+      }
+
+      // build list of currently available spots (after fixed + kept randoms)
+      const taken = new Set(Array.from(claims.keys()));
+      participants.forEach(p => (p.assignedRandoms || []).forEach(s => taken.add(s)));
+      const availableSpots = [];
+      for (let i = 1; i <= totalSpots; i++) if (!taken.has(i)) availableSpots.push(i);
+
+      // shuffle available
+      for (let i = availableSpots.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [availableSpots[i], availableSpots[j]] = [availableSpots[j], availableSpots[i]];
+      }
+
+      // assign only what's needed, preserving existing
+      let idx = 0;
+      for (const p of participants) {
+        const need = Math.max(0, (p.randomCount || 0) - (p.assignedRandoms?.length || 0));
+        for (let k = 0; k < need && idx < availableSpots.length; k++) {
+          p.assignedRandoms.push(availableSpots[idx++]);
+        }
+        p.assignedRandoms.sort((a,b)=>a-b);
+      }
+
+      randomsApplied = true;
+      render();
+    }
+
+    function buildAssignments() {
+      assignments = {};
+      // fixed (first-come claims)
+      const { claims } = computeFixedClaims();
+      for (const [spot, name] of claims.entries()) {
+        if (!assignments[spot]) assignments[spot] = [];
+        assignments[spot].push({ name, type: 'fixed' });
+      }
+      // randoms
+      participants.forEach(p => {
+        p.assignedRandoms.forEach(s => {
+          if (!assignments[s]) assignments[s] = [];
+          assignments[s].push({ name: p.name, type: 'rand' });
+        });
+      });
+    }
+
+    function renderConflictBanner() {
+      const banner = document.getElementById('conflictBanner');
+      const { conflicts } = computeFixedClaims();
+      if (conflicts.length > 0) {
+        banner.style.display = 'block';
+        const list = conflicts
+          .map(c => `Spot ${c.spot}: ${c.names.join(', ')}`)
+          .join(' • ');
+        banner.innerHTML = `<b>Conflicts in fixed picks:</b> ${list}`;
+        document.getElementById('assignBtn').disabled = true;
+      } else {
+        banner.style.display = 'none';
+        banner.textContent = '';
+      }
+    }
+
+    function renderRemainingLabel() {
+      const el = document.getElementById('remainingSpots');
+      const { claims } = computeFixedClaims();
+      if (randomsApplied) {
+        const filled = Object.keys(assignments).length;
+        const remaining = Math.max(0, totalSpots - filled);
+        el.textContent = `Remaining unfilled spots: ${remaining}`;
+      } else {
+        const alreadyRandom = participants.reduce((acc, p) => acc + (p.assignedRandoms?.length || 0), 0);
+        const remaining = Math.max(0, totalSpots - claims.size - alreadyRandom);
+        const requestedRemaining = participants.reduce((acc, p) => acc + Math.max(0, (p.randomCount || 0) - (p.assignedRandoms?.length || 0)), 0);
+        el.textContent = `Remaining unfilled spots: ${remaining} — Randoms still needed: ${requestedRemaining}`;
+      }
+    }
+
+    function render() {
+      totalSpots = Math.max(1, parseInt(document.getElementById('totalSpots').value || '1', 10));
+      buildAssignments();
+      renderConflictBanner();
+
+      const { claims } = computeFixedClaims();
+      updateOverbookBanner(claims);
+      renderRemainingLabel();
+
+      // Participants table
+      const pBody = document.querySelector('#participantsTable tbody');
+      pBody.innerHTML = '';
+      participants.forEach((p, i) => {
+        const tr = document.createElement('tr');
+        const fixedText = p.fixed.join(', ');
+        const randText = p.randomCount + (p.assignedRandoms.length ? ` (${p.assignedRandoms.slice().sort((a,b)=>a-b).join(', ')})` : '');
+        tr.innerHTML = `
+          <td>${i + 1}</td>
+          <td>${escapeHTML(p.name)}</td>
+          <td>${escapeHTML(fixedText)}</td>
+          <td>${escapeHTML(randText)}</td>
+          <td style="text-align:right">
+            <button onclick="removeParticipant(${i})">Remove</button>
+          </td>
+        `;
+        pBody.appendChild(tr);
+      });
+
+      // Assignments table
+      const aBody = document.querySelector('#assignmentsTable tbody');
+      aBody.innerHTML = '';
+      for (let i = 1; i <= totalSpots; i++) {
+        const entries = assignments[i] ? assignments[i] : [];
+        const isConflict = entries.length > 1 && new Set(entries.map(e => e.name)).size > 1;
+        const tr = document.createElement('tr');
+        tr.className = isConflict ? 'conflict' : '';
+        const nameHtml = entries.map(e => {
+          const cls = e.type === 'fixed' ? 'fixedTag' : 'randTag';
+          return `<span class="${cls}">${escapeHTML(e.name)}</span>`;
+        }).join(', ');
+        tr.innerHTML = `
+          <td>${i}</td>
+          <td>${nameHtml}</td>
+        `;
+        aBody.appendChild(tr);
+      }
+    }
+
+    function escapeHTML(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    // ---------- CSV EXPORTS ----------
+    function exportSpotsCSV() {
+      const rows = [['Spot #', 'Name']];
+      for (let i = 1; i <= totalSpots; i++) {
+        const entries = assignments[i] ? assignments[i] : [];
+        const names = entries.map(e => e.name).join(', ');
+        rows.push([String(i), names]);
+      }
+      downloadCSV(rows, `raffle_spots_${totalSpots}.csv`);
+    }
+
+    function exportParticipantsCSV() {
+      const rows = [['Name', 'Fixed Spots', 'Random Count', 'Assigned Randoms']];
+      participants.forEach(p => {
+        rows.push([
+          p.name,
+          p.fixed.join(' '),
+          String(p.randomCount),
+          p.assignedRandoms.slice().sort((a,b)=>a-b).join(' ')
+        ]);
+      });
+      downloadCSV(rows, 'raffle_participants.csv');
+    }
+
+    function downloadCSV(rows, filename) {
+      const csv = rows.map(r => r.map(csvEscape).join(',')).join('\\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function csvEscape(cell) {
+      const s = String(cell ?? '');
+      if (/[\",\\n]/.test(s)) {
+        return '\"' + s.replace(/\"/g, '\"\"') + '\"';
+      }
+      return s;
+    }
+
+    // ---------- DOWNLOAD THIS HTML ----------
+    function downloadThisHtml() {
+      const html = document.documentElement.outerHTML;
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'raffle.html';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // initial render
+    render();
+  </script>
+</body>
+</html>
